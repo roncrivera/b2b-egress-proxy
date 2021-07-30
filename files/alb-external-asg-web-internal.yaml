@@ -125,33 +125,6 @@ Resources:
           Action:
           - sts:AssumeRole
       Path: "/"
-      Policies:
-      - PolicyName: AssociateEIP
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - ec2:AssociateAddress
-            - ec2:Describe*
-            Resource:
-            - "*"
-      - PolicyName: RevokeAuthorizeSG
-        PolicyDocument:
-          Version: '2012-10-17'
-          Statement:
-          - Effect: Allow
-            Action:
-            - ec2:RevokeSecurityGroupIngress
-            - ec2:AuthorizeSecurityGroupIngress
-            - ec2:Describe*
-            Resource:
-            - "*"
-
-  FixedEIP:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
 
   B2BIngressALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -291,16 +264,6 @@ Resources:
             /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BIngressASGLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
             # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
             /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
-
-            # Get the EIP allocation id
-            allocationId=$(aws ec2 describe-addresses --region ${AWS::Region} --allocation-ids ${FixedEIP.AllocationId})
-            if [[ $allocationId != *AssociationId* ]]; then
-              freeEIP=${FixedEIP.AllocationId}
-            fi
-
-            # Bind the address
-            #echo "Binding Elastic IP"
-            #aws ec2 associate-address --region ${AWS::Region} --instance-id $(curl -s http://169.254.169.254/latest/meta-data/instance-id) --allocation-id $freeEIP --allow-reassociation || error_exit 'Failed to Associate Elastic IP'
 
             # install nginx from amazon-linux-extras
             amazon-linux-extras install -y nginx1
