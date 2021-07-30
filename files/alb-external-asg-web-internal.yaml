@@ -235,7 +235,6 @@ Resources:
               owner: "root"
               group: "root"
     Properties:
-      AssociatePublicIpAddress: True
       ImageId:  !Ref LatestAmiId
       InstanceType: !Ref InstanceType
       KeyName: !If
