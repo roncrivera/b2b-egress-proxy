@@ -198,7 +198,7 @@ Resources:
         Value: B2BIngressASG
     CreationPolicy:
       ResourceSignal:
-        Timeout: PT15M
+        Timeout: PT5M
         Count: '1'
     UpdatePolicy:
       AutoScalingScheduledAction:
@@ -206,7 +206,7 @@ Resources:
       AutoScalingRollingUpdate:
         MinInstancesInService: 1
         MaxBatchSize: 1
-        PauseTime: PT15M
+        PauseTime: PT5M
         WaitOnResourceSignals: 'true'
         SuspendProcesses:
         - ScheduledActions
