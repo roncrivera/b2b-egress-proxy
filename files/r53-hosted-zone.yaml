@@ -1,0 +1,32 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates the private hosted zone for the partner DNS records.
+
+Parameters:
+  VpcId:
+    Description: VPC ID to associate with the private hosted zone
+    Type: "AWS::EC2::VPC::Id"
+  HostedZoneName:
+    Description: The name of the domain (hosted zone).
+    Type : String
+
+Resources:
+  HostedZone:
+    Type: "AWS::Route53::HostedZone"
+    Properties:
+      HostedZoneConfig:
+        Comment: !Sub "${HostedZoneName} private DNS zone"
+      Name: !Ref HostedZoneName
+      VPCs:
+        -
+          VPCId: !Ref VpcId
+          VPCRegion: !Ref "AWS::Region"
+
+Outputs:
+  HostedZoneName:
+    Description: 'The name of the hosted zone.'
+    Value: !Ref HostedZoneName
+
+  HostedZoneId:
+    Description: 'The ID of the hosted zone.'
+    Value: !Ref HostedZone
