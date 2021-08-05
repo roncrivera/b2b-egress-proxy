@@ -7,7 +7,22 @@ Parameters:
   KeyName:
     Type: String
     Description: Name of RSA key for EC2 access for testing only.
-    Default: riverr1-keypair
+    Default: ''
+
+  ASGMinSize:
+    Description: Minimum number of instances in ASG
+    Type: Number
+    Default: 1
+
+  ASGMaxSize:
+    Description: Maximum number of instances in ASG
+    Type: Number
+    Default: 3
+
+  ASGDesiredCapacity:
+    Description: Desired number of instances in ASG
+    Type: Number
+    Default: 1
 
   VpcId:
     Description: VPC where resources will be provisioned
@@ -68,6 +83,9 @@ Metadata:
       - InstanceType
       - LatestAmiId
       - KeyName
+      - ASGMinSize
+      - ASGMaxSize
+      - ASGDesiredCapacity
 
     - Label:
         default: Network parameter
@@ -85,6 +103,12 @@ Metadata:
         default: AMI ID
       KeyName:
         default: SSH Key name
+      ASGMinSize:
+        default: Minimum instance count
+      ASGMaxSize:
+        default: Maximum instance count
+      ASGDesiredCapacity:
+        default: Desired instance count
       VpcId:
         default: VPC ID
       PublicSubnetIDs:
@@ -103,10 +127,10 @@ Conditions:
 
 Resources:
 
-  B2BIngressRole:
+  B2BWebRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "B2BIngressRole-${AWS::StackName}"
+      RoleName: !Sub "${AWS::StackName}-B2BWebRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -118,20 +142,20 @@ Resources:
           - sts:AssumeRole
       Path: "/"
 
-  B2BIngressALB:
+  B2BWebALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internet-facing
       Type: application
-      Name: B2BIngressALB
+      Name: !Sub "${AWS::StackName}-B2BWebALB"
       Subnets: !Ref PublicSubnetIDs
       SecurityGroups:
-        - !Ref B2BIngressALBSecurityGroup
+        - !Ref B2BWebALBSecurityGroup
 
-  B2BIngressALBTargetGroupHTTP:
+  B2BWebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: B2BIngressALBTargetGroupHTTP
+      Name: B2BWebTargetGroup
       HealthCheckIntervalSeconds: 60
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
@@ -140,28 +164,28 @@ Resources:
       Protocol: HTTP
       VpcId: !Ref VpcId
 
-  B2BIngressALBListenerHTTP:
+  B2BWebListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
       - Type: forward
-        TargetGroupArn: !Ref B2BIngressALBTargetGroupHTTP
-      LoadBalancerArn: !Ref B2BIngressALB
+        TargetGroupArn: !Ref B2BWebTargetGroup
+      LoadBalancerArn: !Ref B2BWebALB
       Port: !Ref HttpPort
       Protocol: HTTP
 
-  B2BIngressInstanceProfile:
+  B2BWebInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: "/"
-      InstanceProfileName: !Sub "B2BIngressInstanceProfile-${AWS::StackName}"
+      InstanceProfileName: !Sub "${AWS::StackName}-B2BWebInstanceProfile"
       Roles:
-        - !Ref B2BIngressRole
+        - !Ref B2BWebRole
 
-  B2BIngressALBSecurityGroup:
+  B2BWebALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow client access to B2BIngressALB
+      GroupDescription: Allow client access to B2BWebALB
       VpcId: !Ref VpcId
       SecurityGroupIngress:
       - CidrIp: !Ref AllowedClientCIDR
@@ -169,33 +193,33 @@ Resources:
         ToPort: !Ref HttpPort
         IpProtocol: tcp
 
-  B2BIngressEC2SecurityGroup:
+  B2BWebEC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow ELB access to Proxy EC2 SG
+      GroupDescription: Allow ELB access to Web EC2 instance
       VpcId: !Ref VpcId
       SecurityGroupIngress:
       - IpProtocol: tcp
         FromPort: !Ref HttpPort
         ToPort: !Ref HttpPort
-        SourceSecurityGroupId: !Ref "B2BIngressALBSecurityGroup"
+        SourceSecurityGroupId: !Ref B2BWebALBSecurityGroup
 
-  B2BIngressASG:
+  B2BWebASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier: !Ref PublicSubnetIDs
       Cooldown: 120
-      LaunchConfigurationName: !Ref B2BIngressASGLaunchConfig
+      LaunchConfigurationName: !Ref B2BWebLaunchConfig
       MaxSize: 3
       MinSize: 1
       TargetGroupARNs:
-        - Ref: B2BIngressALBTargetGroupHTTP
+        - Ref: B2BWebTargetGroup
       TerminationPolicies:
       - OldestInstance
       Tags:
       - Key: Name
         PropagateAtLaunch: 'true'
-        Value: B2BIngressASG
+        Value: B2BWebASG
     CreationPolicy:
       ResourceSignal:
         Timeout: PT5M
@@ -211,10 +235,10 @@ Resources:
         SuspendProcesses:
         - ScheduledActions
 
-  B2BIngressASGLaunchConfig:
+  B2BWebLaunchConfig:
     Type: AWS::AutoScaling::LaunchConfiguration
     Metadata:
-      Comment: Configures B2B Ingress Instance
+      Comment: Configures B2B Web Instance
       AWS::CloudFormation::Init:
         config:
           files:
@@ -231,8 +255,8 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.B2BIngressASGLaunchConfig.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BIngressASGLaunchConfig --region ${AWS::Region}
+                path=Resources.B2BWebLaunchConfig.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BWebLaunchConfig --region ${AWS::Region}
                 runas=root
               mode: "000400"
               owner: "root"
@@ -246,13 +270,14 @@ Resources:
          - !Ref KeyName
          - !Ref "AWS::NoValue"
       SecurityGroups:
-      - !Ref B2BIngressEC2SecurityGroup
-
+      - !Ref B2BWebEC2SecurityGroup
       IamInstanceProfile:
-        Ref: B2BIngressInstanceProfile
+        Ref: B2BWebInstanceProfile
       UserData:
         Fn::Base64: !Sub |
             #!/bin/bash -xe
+
+
 
             # Install AWS CLI
             yum install -y awscli
@@ -261,36 +286,30 @@ Resources:
             yum install -y aws-cfn-bootstrap
 
             # Start cfn-init
-            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BIngressASGLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BWebLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
             # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
             /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
 
-            # install nginx from amazon-linux-extras
+            # Install nginx from amazon-linux-extras
             amazon-linux-extras install -y nginx1
 
             # Start nginx
             systemctl start nginx
 
             # All done so signal success
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BIngressASG --region ${AWS::Region}
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BWebASG --region ${AWS::Region}
             echo "Userdata execution completed"
 
 Outputs:
 
-  B2BIngressALBFQDN:
+  B2BWebALBFQDN:
     Description: ALB FQDN to be used by clients
-    Value: !GetAtt B2BIngressALB.DNSName
-    Export:
-        Name: B2BIngressALBFQDN
+    Value: !GetAtt B2BWebALB.DNSName
 
   HttpPort:
     Description: HTTP Port
     Value: !Ref HttpPort
-    Export:
-      Name: HttpPort
 
   HttpURL:
     Description: HTTP URL
-    Value: !Sub "http://${B2BIngressALB.DNSName}:${HttpPort}"
-    Export:
-      Name: HttpURL
+    Value: !Sub "http://${B2BWebALB.DNSName}:${HttpPort}"
