@@ -1,0 +1,296 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  L2 Blue Print - WebServer with Auto Scaling Group and Application Load Balancer in Public Subnet
+
+Parameters:
+
+  KeyName:
+    Type: String
+    Description: Name of RSA key for EC2 access for testing only.
+    Default: riverr1-keypair
+
+  VpcId:
+    Description: VPC where resources will be provisioned
+    Type: "AWS::EC2::VPC::Id"
+
+  PublicSubnetIDs:
+    Description: Public SubnetIDs where the Application LoadBalancer will be placed (Select min 2, max 3)
+    Type: "List<AWS::EC2::Subnet::Id>"
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - t3.nano
+    - t3.micro
+    - t3.small
+    - t3.medium
+    - t3.large
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m5.large
+    - m5.xlarge
+    - m5.2xlarge
+    - c3.large
+    - c3.xlarge
+    - c4.large
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  HttpPort:
+    Type: String
+    Default: 80
+    Description: HTTP port
+
+  AllowedClientCIDR:
+    Description: The client network CIDR allowed to access the service. The allowed block size is between a /32 netmask and /8 netmask
+    Type: String
+    Default: 0.0.0.0/0
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    Description: Default latest Amazon Linux2 AMI.
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: HTTP parameter
+      Parameters:
+      - HttpPort
+      - InstanceType
+      - LatestAmiId
+      - KeyName
+
+    - Label:
+        default: Network parameter
+      Parameters:
+      - VpcId
+      - PublicSubnetIDs
+      - AllowedClientCIDR
+
+    ParameterLabels:
+      HttpPort:
+        default: HTTP Port
+      InstanceType:
+        default: Instance Type
+      LatestAmiId:
+        default: AMI ID
+      KeyName:
+        default: SSH Key name
+      VpcId:
+        default: VPC ID
+      PublicSubnetIDs:
+        default: Public Subnet IDs
+      AllowedClientCIDR:
+        default: Allowed client CIDR
+
+
+Conditions:
+
+  AddSSHKey: !Not
+   - !Equals
+     - ''
+     - !Ref KeyName
+
+
+Resources:
+
+  B2BIngressRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "B2BIngressRole-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  B2BIngressALB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Name: B2BIngressALB
+      Subnets: !Ref PublicSubnetIDs
+      SecurityGroups:
+        - !Ref B2BIngressALBSecurityGroup
+
+  B2BIngressALBTargetGroupHTTP:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: B2BIngressALBTargetGroupHTTP
+      HealthCheckIntervalSeconds: 60
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      Port: !Ref HttpPort
+      Protocol: HTTP
+      VpcId: !Ref VpcId
+
+  B2BIngressALBListenerHTTP:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref B2BIngressALBTargetGroupHTTP
+      LoadBalancerArn: !Ref B2BIngressALB
+      Port: !Ref HttpPort
+      Protocol: HTTP
+
+  B2BIngressInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      InstanceProfileName: !Sub "B2BIngressInstanceProfile-${AWS::StackName}"
+      Roles:
+        - !Ref B2BIngressRole
+
+  B2BIngressALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow client access to B2BIngressALB
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - CidrIp: !Ref AllowedClientCIDR
+        FromPort: !Ref HttpPort
+        ToPort: !Ref HttpPort
+        IpProtocol: tcp
+
+  B2BIngressEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ELB access to Proxy EC2 SG
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: !Ref HttpPort
+        ToPort: !Ref HttpPort
+        SourceSecurityGroupId: !Ref "B2BIngressALBSecurityGroup"
+
+  B2BIngressASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref PublicSubnetIDs
+      Cooldown: 120
+      LaunchConfigurationName: !Ref B2BIngressASGLaunchConfig
+      MaxSize: 3
+      MinSize: 1
+      TargetGroupARNs:
+        - Ref: B2BIngressALBTargetGroupHTTP
+      TerminationPolicies:
+      - OldestInstance
+      Tags:
+      - Key: Name
+        PropagateAtLaunch: 'true'
+        Value: B2BIngressASG
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+        Count: '1'
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: true
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        WaitOnResourceSignals: 'true'
+        SuspendProcesses:
+        - ScheduledActions
+
+  B2BIngressASGLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      Comment: Configures B2B Ingress Instance
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              content: !Sub |
+                [main]
+                stack= ${AWS::StackId}
+                region=${AWS::Region}
+                interval=5
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.B2BIngressASGLaunchConfig.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BIngressASGLaunchConfig --region ${AWS::Region}
+                runas=root
+              mode: "000400"
+              owner: "root"
+              group: "root"
+    Properties:
+      AssociatePublicIpAddress: True
+      ImageId:  !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !If
+         - AddSSHKey
+         - !Ref KeyName
+         - !Ref "AWS::NoValue"
+      SecurityGroups:
+      - !Ref B2BIngressEC2SecurityGroup
+
+      IamInstanceProfile:
+        Ref: B2BIngressInstanceProfile
+      UserData:
+        Fn::Base64: !Sub |
+            #!/bin/bash -xe
+
+            # Install AWS CLI
+            yum install -y awscli
+
+            # Install AWS CloudFormation bootstrap scripts
+            yum install -y aws-cfn-bootstrap
+
+            # Start cfn-init
+            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BIngressASGLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+            # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
+            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+
+            # install nginx from amazon-linux-extras
+            amazon-linux-extras install -y nginx1
+
+            # Start nginx
+            systemctl start nginx
+
+            # All done so signal success
+            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BIngressASG --region ${AWS::Region}
+            echo "Userdata execution completed"
+
+Outputs:
+
+  B2BIngressALBFQDN:
+    Description: ALB FQDN to be used by clients
+    Value: !GetAtt B2BIngressALB.DNSName
+    Export:
+        Name: B2BIngressALBFQDN
+
+  HttpPort:
+    Description: HTTP Port
+    Value: !Ref HttpPort
+    Export:
+      Name: HttpPort
+
+  HttpURL:
+    Description: HTTP URL
+    Value: !Sub "http://${B2BIngressALB.DNSName}:${HttpPort}"
+    Export:
+      Name: HttpURL
