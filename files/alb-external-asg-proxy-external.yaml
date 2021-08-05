@@ -24,6 +24,14 @@ Parameters:
     Type: Number
     Default: 1
 
+  ProxyName:
+    Description: Proxy FQDN with trailing dot '.'
+    Type: String
+
+  HostedZoneName:
+    Description: Hosted zone where the DNS record will be created
+    Type: String
+
   VpcId:
     Description: VPC where resources will be provisioned
     Type: "AWS::EC2::VPC::Id"
@@ -178,6 +186,17 @@ Resources:
       Port: !Ref ProxyPort
       Protocol: HTTP
 
+  B2BProxyDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Join ['', [!Ref HostedZoneName, '.']]
+      Comment: DNS name for B2BProxyALB
+      Name: !Ref ProxyName
+      Type: CNAME
+      TTL: '60'
+      ResourceRecords:
+        - !GetAtt B2BProxyALB.DNSName
+
   B2BProxyInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
@@ -320,8 +339,8 @@ Outputs:
 
   ProxyURL:
     Description: Proxy URL
-    Value: !Sub "http://${B2BProxyALB.DNSName}:${ProxyPort}"
+    Value: !Sub "http://${B2BProxyDNSRecord}:${ProxyPort}"
 
   ProxySettings:
     Description: Copy and paste to your shell to set the proxy
-    Value: !Sub "export http_proxy=http://${B2BProxyALB.DNSName}:${ProxyPort} && export https_proxy=$http_proxy"
+    Value: !Sub "export http_proxy=http://${B2BProxyDNSRecord}:${ProxyPort} && export https_proxy=$http_proxy"
