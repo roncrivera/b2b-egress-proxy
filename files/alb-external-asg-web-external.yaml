@@ -130,7 +130,7 @@ Resources:
   B2BWebRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${AWS::StackName}-B2BWebRole"
+      RoleName: !Sub "B2BWebRole-${AWS::StackName}"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -160,6 +160,10 @@ Resources:
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
       UnhealthyThresholdCount: 3
+      HealthCheckPort: !Ref HttpPort
+      HealthCheckProtocol: HTTP
+      Matcher:
+        HttpCode: "200"
       Port: !Ref HttpPort
       Protocol: HTTP
       VpcId: !Ref VpcId
@@ -287,6 +291,7 @@ Resources:
 
             # Start cfn-init
             /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BWebLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+
             # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
             /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
 
