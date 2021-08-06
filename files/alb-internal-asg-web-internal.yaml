@@ -281,7 +281,7 @@ Resources:
         Fn::Base64: !Sub |
             #!/bin/bash -xe
 
-            .  /etc/profile.d/100_enable_proxy.sh
+            export http_proxy=http://ext-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
 
             # Install AWS CLI
             yum install -y awscli
