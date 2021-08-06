@@ -99,7 +99,7 @@ Resources:
       MapPublicIpOnLaunch: 'false'
       Tags:
         - Key: Name
-          Value: Pubic Subnet 3
+          Value: Public Subnet 3
 
       VpcId: !Ref 'VPC'
 
