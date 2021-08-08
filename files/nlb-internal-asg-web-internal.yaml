@@ -7,7 +7,7 @@ Parameters:
   KeyName:
     Type: String
     Description: Name of RSA key for EC2 access for testing only.
-    Default: riverr1-keypair
+    Default: ''
 
   VpcId:
     Description: VPC where resources will be provisioned
@@ -15,10 +15,6 @@ Parameters:
 
   PrivateSubnetIDs:
     Description: Private SubnetIDs where the Network LoadBalancer will be placed (Select min 2, max 3)
-    Type: "List<AWS::EC2::Subnet::Id>"
-
-  PublicSubnetIDs:
-    Description: Public SubnetIDs where the WebServer will be placed (Select min 2, max 3)
     Type: "List<AWS::EC2::Subnet::Id>"
 
   InstanceType:
@@ -55,8 +51,8 @@ Parameters:
   AllowedClientCIDR:
     Description: The client network CIDR allowed to access the service. The allowed block size is between a /32 netmask and /8 netmask
     Type: String
-    Default: 172.31.0.0/16
-#    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
+    Default: 10.0.0.0/16
+    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
 
   LatestAmiId:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
@@ -79,7 +75,6 @@ Metadata:
       Parameters:
       - VpcId
       - PrivateSubnetIDs
-      - PublicSubnetIDs
       - AllowedClientCIDR
 
     ParameterLabels:
@@ -95,8 +90,6 @@ Metadata:
         default: VPC ID
       PrivateSubnetIDs:
         default: Private Subnet IDs
-      PublicSubnetIDs:
-        default: Public Subnet IDs
       AllowedClientCIDR:
         default: Allowed client CIDR
 
