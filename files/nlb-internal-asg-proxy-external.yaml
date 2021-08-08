@@ -1,0 +1,473 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  L2 Blue Print - Squid Proxy with Auto Scaling Group and Network Load Balancer
+
+Parameters:
+
+  KeyName:
+    Type: String
+    Description: Name of RSA key for EC2 access for testing only.
+    Default: ''
+
+  ASGMinSize:
+    Description: Minimum number of instances in ASG
+    Type: Number
+    Default: 1
+
+  ASGMaxSize:
+    Description: Maximum number of instances in ASG
+    Type: Number
+    Default: 3
+
+  ASGDesiredCapacity:
+    Description: Desired number of instances in ASG
+    Type: Number
+    Default: 1
+
+  ProxyName:
+    Description: Proxy FQDN with trailing dot '.'
+    Type: String
+
+  HostedZoneName:
+    Description: Hosted zone where the DNS record will be created
+    Type: String
+
+  VpcId:
+    Description: VPC where resources will be provisioned
+    Type: "AWS::EC2::VPC::Id"
+
+  PrivateSubnetIDs:
+    Description: Private SubnetIDs where the Network LoadBalancer will be placed (Select min 2, max 3)
+    Type: "List<AWS::EC2::Subnet::Id>"
+
+  PublicSubnetIDs:
+    Description: Public SubnetIDs where the Proxy instances will be placed (Select min 2, max 3)
+    Type: "List<AWS::EC2::Subnet::Id>"
+
+  InstanceType:
+    Description: EC2 instance type
+    Type: String
+    Default: t2.micro
+    AllowedValues:
+    - t2.micro
+    - t3.nano
+    - t3.micro
+    - t3.small
+    - t3.medium
+    - t3.large
+    - m3.medium
+    - m3.large
+    - m3.xlarge
+    - m3.2xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m5.large
+    - m5.xlarge
+    - m5.2xlarge
+    - c3.large
+    - c3.xlarge
+    - c4.large
+    ConstraintDescription: must be a valid EC2 instance type.
+
+  ProxyPort:
+    Type: String
+    Default: 3128
+    Description: Proxy port
+
+  AllowedClientCIDR:
+    Description: The client network CIDR allowed to access the service. The allowed block size is between a /32 netmask and /8 netmask
+    Type: String
+    Default: 10.0.0.0/16
+    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
+
+  LatestAmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+    Description: Default latest Amazon Linux2 AMI.
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+    - Label:
+        default: Proxy parameter
+      Parameters:
+      - ProxyPort
+      - InstanceType
+      - LatestAmiId
+      - KeyName
+      - ASGMinSize
+      - ASGMaxSize
+      - ASGDesiredCapacity
+
+    - Label:
+        default: Network parameter
+      Parameters:
+      - VpcId
+      - PrivateSubnetIDs
+      - PublicSubnetIDs
+      - AllowedClientCIDR
+
+    ParameterLabels:
+      ProxyPort:
+        default: Proxy Port
+      InstanceType:
+        default: Instance Type
+      LatestAmiId:
+        default: AMI ID
+      KeyName:
+        default: SSH Key name
+      ASGMinSize:
+        default: Minimum instance count
+      ASGMaxSize:
+        default: Maximum instance count
+      ASGDesiredCapacity:
+        default: Desired instance count
+      VpcId:
+        default: VPC ID
+      PrivateSubnetIDs:
+        default: Private Subnet IDs
+      PublicSubnetIDs:
+        default: Public Subnet IDs
+      AllowedClientCIDR:
+        default: Allowed client CIDR
+
+
+Conditions:
+
+  AddSSHKey: !Not
+   - !Equals
+     - ''
+     - !Ref KeyName
+
+
+Resources:
+
+  ProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AWS::StackName}-ProxyRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  ProxyNLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internal
+      Type: network
+      Name: !Sub "${AWS::StackName}-ProxyNLB"
+      Subnets: !Ref PrivateSubnetIDs
+      Tags:
+        - Key: Application
+          Value: Squid Proxy
+        - Key: DataClassification
+          Value: "Confidential"
+
+  ProxyTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${AWS::StackName}-ProxyTargetGroup"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      HealthCheckPort: !Ref ProxyPort
+      HealthCheckProtocol: TCP
+      Port: !Ref ProxyPort
+      Protocol: TCP
+      VpcId: !Ref VpcId
+      TargetType: instance
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: 60
+
+  ProxyListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: forward
+        TargetGroupArn: !Ref ProxyTargetGroup
+      LoadBalancerArn: !Ref ProxyNLB
+      Port: !Ref ProxyPort
+      Protocol: TCP
+
+  ProxyDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Join ['', [!Ref HostedZoneName, '.']]
+      Comment: DNS name for ProxyNLB
+      Name: !Ref ProxyName
+      Type: CNAME
+      TTL: '60'
+      ResourceRecords:
+        - !GetAtt ProxyNLB.DNSName
+
+  ProxyInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      InstanceProfileName: !Sub "${AWS::StackName}-ProxyInstanceProfile"
+      Roles:
+        - !Ref ProxyRole
+
+  ProxyNLBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow client access to Proxy
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - CidrIp: !Ref AllowedClientCIDR
+        FromPort: !Ref ProxyPort
+        ToPort: !Ref ProxyPort
+        IpProtocol: tcp
+
+  ProxyEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to Proxy EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - CidrIp: !Ref AllowedClientCIDR
+        FromPort: !Ref ProxyPort
+        ToPort: !Ref ProxyPort
+        IpProtocol: tcp
+
+  ProxyASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref PublicSubnetIDs
+      Cooldown: 120
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ProxyASGLaunchTemplate
+        Version: !GetAtt ProxyASGLaunchTemplate.LatestVersionNumber
+      MaxSize: !Ref ASGMaxSize
+      MinSize: !Ref ASGMinSize
+      DesiredCapacity: !Ref ASGDesiredCapacity
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
+      TargetGroupARNs:
+        - Ref: ProxyTargetGroup
+      TerminationPolicies:
+      - OldestInstance
+      Tags:
+      - Key: Name
+        PropagateAtLaunch: 'true'
+        Value: ProxyASG-instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+        Count: !Ref ASGDesiredCapacity
+    UpdatePolicy:
+      AutoScalingScheduledAction:
+        IgnoreUnmodifiedGroupSizeProperties: true
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT15M
+        WaitOnResourceSignals: 'true'
+        SuspendProcesses:
+        - ScheduledActions
+
+  ProxyASGLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Metadata:
+      Comment: Configures Proxy Instance
+      AWS::CloudFormation::Init:
+        config:
+          files:
+            "/etc/squid/squid.allowed.sites.txt":
+              content: |
+                .amazonaws.com
+                .google.com
+              mode: '000400'
+              owner: "root"
+              group: "root"
+            "/etc/squid/squid.conf":
+              content: !Sub |
+                 # Recommended minimum configuration:
+                 #
+
+                 # Example rule allowing access from your local networks.
+                 # Adapt to list your (internal) IP networks from where browsing
+                 # should be allowed
+                 acl localnet src 10.0.0.0/8	# RFC1918 possible internal network
+                 acl localnet src 172.16.0.0/12	# RFC1918 possible internal network
+                 acl localnet src 192.168.0.0/16	# RFC1918 possible internal network
+                 acl localnet src fc00::/7       # RFC 4193 local private network range
+                 acl localnet src fe80::/10      # RFC 4291 link-local (directly plugged) machines
+                 acl localnet src 127.0.0.1
+
+                 # The Instance Metadata Service
+                 # (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html#instance-metadata-limiting-access)
+                 acl imds dst 169.254.169.254
+
+
+                 acl SSL_ports port 443
+                 acl Safe_ports port 80		# http
+                 acl Safe_ports port 21		# ftp
+                 acl Safe_ports port 443		# https
+                 acl Safe_ports port 70		# gopher
+                 acl Safe_ports port 210		# wais
+                 acl Safe_ports port 1025-65535	# unregistered ports
+                 acl Safe_ports port 280		# http-mgmt
+                 acl Safe_ports port 488		# gss-http
+                 acl Safe_ports port 591		# filemaker
+                 acl Safe_ports port 777		# multiling http
+                 acl CONNECT method CONNECT
+
+                 #
+                 # Recommended minimum Access Permission configuration:
+                 #
+                 # Deny requests to the Instance Metadata Service
+                 http_access deny imds
+
+                 # Deny requests to certain unsafe ports
+                 http_access deny !Safe_ports
+
+                 # Deny CONNECT to other than secure SSL ports
+                 http_access deny CONNECT !SSL_ports
+
+                 # Only allow cachemgr access from localhost
+                 http_access allow localhost manager
+                 http_access deny manager
+
+                 # Deny requests to services running on localhost
+                 http_access deny to_localhost
+
+                 #
+                 # INSERT YOUR OWN RULE(S) HERE TO ALLOW ACCESS FROM YOUR CLIENTS
+                 #
+
+                 # Example rule allowing access from your local networks.
+                 # Adapt localnet in the ACL section to list your (internal) IP networks
+                 # from where browsing should be allowed
+                 acl allowed_http_sites dstdomain "/etc/squid/squid.allowed.sites.txt"
+                 http_access allow allowed_http_sites
+                 http_access allow localnet
+                 #http_access allow localhost
+
+                 # And finally deny all other access to this proxy
+                 http_access deny all
+
+                 # Squid normally listens to port 3128, but needs to be parametrized here
+                 http_port 0.0.0.0:${ProxyPort} ssl-bump cert=/etc/squid/cert.pem
+                 acl allowed_https_sites ssl::server_name "/etc/squid/squid.allowed.sites.txt"
+                 acl step1 at_step SslBump1
+                 acl step2 at_step SslBump2
+                 acl step3 at_step SslBump3
+                 ssl_bump peek step1 all
+                 ssl_bump peek step2 allowed_https_sites
+                 ssl_bump splice step3 allowed_https_sites
+                 ssl_bump terminate step2 all
+
+                 # Uncomment and adjust the following to add a disk cache directory.
+                 #cache_dir ufs /var/spool/squid 100 16 256
+
+                 # Leave coredumps in the first cache dir
+                 coredump_dir /var/spool/squid
+                 #
+                 # Add any of your own refresh_pattern entries above these.
+                 #
+                 refresh_pattern ^ftp:		1440	20%	10080
+                 refresh_pattern ^gopher:	1440	0%	1440
+                 refresh_pattern -i (/cgi-bin/|\?) 0	0%	0
+                 refresh_pattern .		0	20%	4320
+            "/etc/cfn/cfn-hup.conf":
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+                interval=5
+              mode: "000400"
+              owner: "root"
+              group: "root"
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.ProxyASGLaunchConfig.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource ProxyASGLaunchTemplate --region ${AWS::Region}
+                runas=root
+              mode: "000400"
+              owner: "root"
+              group: "root"
+    Properties:
+      LaunchTemplateName: ProxyASGLaunchTemplate
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !If
+          - AddSSHKey
+          - !Ref KeyName
+          - !Ref "AWS::NoValue"
+        IamInstanceProfile:
+          Name:
+            Ref: ProxyInstanceProfile
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
+            Groups:
+              - !Ref ProxyEC2SecurityGroup
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - Key: DataClassification
+                Value: Confidential
+          - ResourceType: instance
+            Tags:
+              - Key: SquidConfig
+                Value: SquidConfig
+        UserData:
+          Fn::Base64: !Sub |
+              #!/bin/bash -xe
+
+              # Install AWS CLI
+              yum install -y awscli
+
+              # Install AWS CFN bootstrap scripts
+              yum install -y aws-cfn-bootstrap
+
+              # Start cfn-init
+              /opt/aws/bin/cfn-init --stack ${AWS::StackId} --resource ProxyASGLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+
+              # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
+              /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+
+              # Install squid
+              yum install -y squid
+
+              # Generate dummy certificate
+              openssl req -x509 -newkey rsa:4096 -keyout /etc/squid/cert.pem -out /etc/squid/cert.pem -days 3650 -subj "/C=AU/ST=NSW/L=squid/O=squid/CN=squid" -nodes
+
+              # Start squid
+              systemctl start squid
+
+              # All done so signal success
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource ProxyASG --region ${AWS::Region}
+              echo "Userdata execution completed"
+
+Outputs:
+
+  ProxyNLBFQDN:
+    Description: NLB FQDN to be used by clients
+    Value: !GetAtt ProxyNLB.DNSName
+
+  ProxyPort:
+    Description: Proxy Port
+    Value: !Ref ProxyPort
+
+  ProxyURL:
+    Description: Proxy URL
+    Value: !Sub "http://${ProxyDNSRecord}:${ProxyPort}"
+
+  ProxySettings:
+    Description: Copy and paste to your shell to set the proxy
+    Value: !Sub "export http_proxy=http://${ProxyDNSRecord}:${ProxyPort} && export https_proxy=$http_proxy"
