@@ -400,7 +400,7 @@ Resources:
               owner: "root"
               group: "root"
     Properties:
-      LaunchTemplateName: ProxyASGLaunchTemplate
+      LaunchTemplateName: !Sub "${AWS::StackName}-ProxyASGLaunchTemplate"
       LaunchTemplateData:
         ImageId: !Ref LatestAmiId
         InstanceType: !Ref InstanceType
