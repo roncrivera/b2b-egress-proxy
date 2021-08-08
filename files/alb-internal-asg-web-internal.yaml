@@ -66,7 +66,7 @@ Parameters:
   AllowedClientCIDR:
     Description: The client network CIDR allowed to access the service. The allowed block size is between a /32 netmask and /8 netmask
     Type: String
-    Default: 10.0.0.0/8
+    Default: 10.0.0.0/16
     AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
 
   LatestAmiId:
@@ -227,7 +227,7 @@ Resources:
         Value: B2BWebASG
     CreationPolicy:
       ResourceSignal:
-        Timeout: PT5M
+        Timeout: PT15M
         Count: '1'
     UpdatePolicy:
       AutoScalingScheduledAction:
@@ -235,7 +235,7 @@ Resources:
       AutoScalingRollingUpdate:
         MinInstancesInService: 1
         MaxBatchSize: 1
-        PauseTime: PT5M
+        PauseTime: PT15M
         WaitOnResourceSignals: 'true'
         SuspendProcesses:
         - ScheduledActions
@@ -282,6 +282,7 @@ Resources:
             #!/bin/bash -xe
 
             export http_proxy=http://ext-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
+            export no_proxy=169.254.169.254 && export NO_PROXY=$no_proxy
 
             # Install AWS CLI
             yum install -y awscli
