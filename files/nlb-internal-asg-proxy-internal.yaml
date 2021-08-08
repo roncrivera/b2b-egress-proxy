@@ -7,7 +7,30 @@ Parameters:
   KeyName:
     Type: String
     Description: Name of RSA key for EC2 access for testing only.
-    Default: riverr1-keypair
+    Default: ''
+
+  ASGMinSize:
+    Description: Minimum number of instances in ASG
+    Type: Number
+    Default: 1
+
+  ASGMaxSize:
+    Description: Maximum number of instances in ASG
+    Type: Number
+    Default: 3
+
+  ASGDesiredCapacity:
+    Description: Desired number of instances in ASG
+    Type: Number
+    Default: 1
+
+  ProxyName:
+    Description: Proxy FQDN with trailing dot '.'
+    Type: String
+
+  HostedZoneName:
+    Description: Hosted zone where the DNS record will be created
+    Type: String
 
   VpcId:
     Description: VPC where resources will be provisioned
@@ -15,10 +38,6 @@ Parameters:
 
   PrivateSubnetIDs:
     Description: Private SubnetIDs where the Network LoadBalancer will be placed (Select min 2, max 3)
-    Type: "List<AWS::EC2::Subnet::Id>"
-
-  PublicSubnetIDs:
-    Description: Public SubnetIDs where the Proxy will be placed (Select min 2, max 3)
     Type: "List<AWS::EC2::Subnet::Id>"
 
   InstanceType:
@@ -55,8 +74,8 @@ Parameters:
   AllowedClientCIDR:
     Description: The client network CIDR allowed to access the service. The allowed block size is between a /32 netmask and /8 netmask
     Type: String
-    Default: 172.31.0.0/16
-#    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
+    Default: 10.0.0.0/16
+    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
 
   LatestAmiId:
     Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
@@ -79,7 +98,6 @@ Metadata:
       Parameters:
       - VpcId
       - PrivateSubnetIDs
-      - PublicSubnetIDs
       - AllowedClientCIDR
 
     ParameterLabels:
@@ -95,8 +113,6 @@ Metadata:
         default: VPC ID
       PrivateSubnetIDs:
         default: Private Subnet IDs
-      PublicSubnetIDs:
-        default: Public Subnet IDs
       AllowedClientCIDR:
         default: Allowed client CIDR
 
@@ -111,10 +127,10 @@ Conditions:
 
 Resources:
 
-  B2BEgressRole:
+  ProxyRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "B2BEgressRole-${AWS::StackName}"
+      RoleName: !Sub "${AWS::StackName}-ProxyRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -126,47 +142,70 @@ Resources:
           - sts:AssumeRole
       Path: "/"
 
-  B2BEgressNLBInternalProxy:
+  ProxyNLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internal
       Type: network
-      Name: B2BEgressNLBInternalProxy
+      Name: !Sub "${AWS::StackName}-ProxyNLB"
       Subnets: !Ref PrivateSubnetIDs
+      Tags:
+        - Key: Application
+          Value: Squid Proxy
+        - Key: DataClassification
+          Value: "Confidential"
 
-  B2BEgressNLBInternalTGProxy:
+  ProxyTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: B2BEgressNLBInternalTGProxy
+      Name: !Sub "${AWS::StackName}-ProxyTargetGroup"
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 10
+      HealthyThresholdCount: 3
+      UnhealthyThresholdCount: 3
+      HealthCheckPort: !Ref ProxyPort
+      HealthCheckProtocol: TCP
       Port: !Ref ProxyPort
       Protocol: TCP
       VpcId: !Ref VpcId
+      TargetType: instance
       TargetGroupAttributes:
         - Key: deregistration_delay.timeout_seconds
           Value: 60
 
-  B2BEgressNLBInternalListProxy:
+  ProxyListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
       - Type: forward
-        TargetGroupArn: !Ref B2BEgressNLBInternalTGProxy
-      LoadBalancerArn: !Ref B2BEgressNLBInternalProxy
+        TargetGroupArn: !Ref ProxyTargetGroup
+      LoadBalancerArn: !Ref ProxyNLB
       Port: !Ref ProxyPort
       Protocol: TCP
 
-  B2BEgressInstanceProfile:
+  ProxyDNSRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneName: !Join ['', [!Ref HostedZoneName, '.']]
+      Comment: DNS name for ProxyNLB
+      Name: !Ref ProxyName
+      Type: CNAME
+      TTL: '60'
+      ResourceRecords:
+        - !GetAtt ProxyNLB.DNSName
+
+  ProxyInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: "/"
-      InstanceProfileName: !Sub "B2BEgressInstanceProfile-${AWS::StackName}"
+      InstanceProfileName: !Sub "${AWS::StackName}-ProxyInstanceProfile"
       Roles:
-        - !Ref B2BEgressRole
+        - !Ref ProxyRole
 
-  B2BEgressNLBInternalSG:
+  ProxyNLBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow access to B2B Egress Proxy
+      GroupDescription: Allow access to Proxy
       VpcId: !Ref VpcId
       SecurityGroupIngress:
       - CidrIp: !Ref AllowedClientCIDR
@@ -174,26 +213,42 @@ Resources:
         ToPort: !Ref ProxyPort
         IpProtocol: tcp
 
-  B2BEgressASGInternal:
+  ProxyEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow access to Proxy EC2 instance
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - CidrIp: !Ref AllowedClientCIDR
+        FromPort: !Ref ProxyPort
+        ToPort: !Ref ProxyPort
+        IpProtocol: tcp
+
+  ProxyASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier: !Ref PrivateSubnetIDs
       Cooldown: 120
-      LaunchConfigurationName: !Ref B2BEgressASGInternalLaunchConfig
-      MaxSize: 3
-      MinSize: 1
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ProxyASGLaunchTemplate
+        Version: !GetAtt ProxyASGLaunchTemplate.LatestVersionNumber
+      MaxSize: !Ref ASGMaxSize
+      MinSize: !Ref ASGMinSize
+      DesiredCapacity: !Ref ASGDesiredCapacity
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
       TargetGroupARNs:
-        - Ref: B2BEgressNLBInternalTGProxy
+        - Ref: ProxyTargetGroup
       TerminationPolicies:
       - OldestInstance
       Tags:
       - Key: Name
         PropagateAtLaunch: 'true'
-        Value: B2BEgressASGInternal
+        Value: ProxyASG-instance
     CreationPolicy:
       ResourceSignal:
         Timeout: PT15M
-        Count: '1'
+        Count: !Ref ASGDesiredCapacity
     UpdatePolicy:
       AutoScalingScheduledAction:
         IgnoreUnmodifiedGroupSizeProperties: true
@@ -205,10 +260,10 @@ Resources:
         SuspendProcesses:
         - ScheduledActions
 
-  B2BEgressASGInternalLaunchConfig:
-    Type: AWS::AutoScaling::LaunchConfiguration
+  ProxyASGLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Metadata:
-      Comment: Configures B2B Egress Instance
+      Comment: Configures Proxy Instance
       AWS::CloudFormation::Init:
         config:
           files:
@@ -280,7 +335,7 @@ Resources:
                  # from where browsing should be allowed
                  acl allowed_http_sites dstdomain "/etc/squid/squid.allowed.sites.txt"
                  http_access allow allowed_http_sites
-                 #http_access allow localnet
+                 http_access allow localnet
                  #http_access allow localhost
 
                  # And finally deny all other access to this proxy
@@ -312,7 +367,7 @@ Resources:
             "/etc/cfn/cfn-hup.conf":
               content: !Sub |
                 [main]
-                stack= ${AWS::StackId}
+                stack=${AWS::StackId}
                 region=${AWS::Region}
                 interval=5
               mode: "000400"
@@ -322,72 +377,76 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.B2BEgressASGInternalLaunchConfig.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BEgressASGInternalLaunchConfig --region ${AWS::Region}
+                path=Resources.ProxyASGLaunchConfig.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource ProxyASGLaunchTemplate --region ${AWS::Region}
                 runas=root
               mode: "000400"
               owner: "root"
               group: "root"
     Properties:
-      ImageId:  !Ref LatestAmiId
-      InstanceType: !Ref InstanceType
-      KeyName: !If
-         - AddSSHKey
-         - !Ref KeyName
-         - !Ref "AWS::NoValue"
-      SecurityGroups:
-      - !Ref B2BEgressNLBInternalSG
+      LaunchTemplateName: !Sub "${AWS::StackName}-ProxyASGLaunchTemplate"
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !If
+          - AddSSHKey
+          - !Ref KeyName
+          - !Ref "AWS::NoValue"
+        IamInstanceProfile:
+          Name:
+            Ref: ProxyInstanceProfile
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - Key: DataClassification
+                Value: Confidential
+          - ResourceType: instance
+            Tags:
+              - Key: SquidConfig
+                Value: SquidConfig
+        UserData:
+          Fn::Base64: !Sub |
+              #!/bin/bash -xe
 
-      IamInstanceProfile:
-        Ref: B2BEgressInstanceProfile
-      UserData:
-        Fn::Base64: !Sub |
-            #!/bin/bash -xe
+              # Install AWS CLI
+              yum install -y awscli
 
-            export http_proxy=http://B2BEgressNLBProxy-a77ca70ec553d510.elb.ap-southeast-2.amazonaws.com:3128 && export https_proxy=$http_proxy
-            export no_proxy=169.254.169.254
+              # Install AWS CFN bootstrap scripts
+              yum install -y aws-cfn-bootstrap
 
-            # Install AWS CLI
-            yum install -y awscli
+              # Start cfn-init
+              /opt/aws/bin/cfn-init --stack ${AWS::StackId} --resource ProxyASGLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
 
-            # Install AWS CloudFormation bootstrap scripts
-            yum install -y aws-cfn-bootstrap
+              # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
+              /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
 
-            # Start cfn-init
-            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BEgressASGInternalLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+              # Install squid
+              yum install -y squid
 
-            # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
-            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+              # Generate dummy certificate
+              openssl req -x509 -newkey rsa:4096 -keyout /etc/squid/cert.pem -out /etc/squid/cert.pem -days 3650 -subj "/C=AU/ST=NSW/L=squid/O=squid/CN=squid" -nodes
 
-            # Install squid
-            yum install -y squid
+              # Start squid
+              systemctl start squid
 
-            # Generate dummy certificate
-            openssl req -x509 -newkey rsa:4096 -keyout /etc/squid/cert.pem -out /etc/squid/cert.pem -days 3650 -subj "/C=AU/ST=NSW/L=squid/O=squid/CN=squid" -nodes
-
-            # start squid
-            systemctl start squid
-
-            # All done so signal success
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BEgressASGInternal --region ${AWS::Region}
-            echo "Userdata execution completed"
+              # All done so signal success
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource ProxyASG --region ${AWS::Region}
+              echo "Userdata execution completed"
 
 Outputs:
 
-  B2BEgressNLBInternalProxyFQDN:
+  ProxyNLBFQDN:
     Description: NLB FQDN to be used by clients
-    Value: !GetAtt B2BEgressNLBInternalProxy.DNSName
-    Export:
-        Name: B2BEgressNLBInternalProxyFQDN
+    Value: !GetAtt ProxyNLB.DNSName
 
-  InternalProxyPort:
-    Description: Port of the Squid Proxy
+  ProxyPort:
+    Description: Proxy Port
     Value: !Ref ProxyPort
-    Export:
-      Name: InternalProxyPort
 
-  InternalProxySettings:
-    Description: Proxy settings. Copy and paste to your shell to set the proxy
-    Value: !Sub "export http_proxy=http://${B2BEgressNLBInternalProxy.DNSName}:${ProxyPort} && export https_proxy=$http_proxy"
-    Export:
-      Name: InternalProxySettings
+  ProxyURL:
+    Description: Proxy URL
+    Value: !Sub "http://${ProxyDNSRecord}:${ProxyPort}"
+
+  ProxySettings:
+    Description: Copy and paste to your shell to set the proxy
+    Value: !Sub "export http_proxy=http://${ProxyDNSRecord}:${ProxyPort} && export https_proxy=$http_proxy"
