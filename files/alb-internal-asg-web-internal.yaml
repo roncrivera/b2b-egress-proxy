@@ -131,7 +131,7 @@ Resources:
   B2BWebRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "B2BWebRole-${AWS::StackName}"
+      RoleName: !Sub "${AWS::StackName}-B2BWebRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -156,7 +156,7 @@ Resources:
   B2BWebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: B2BWebTargetGroup
+      Name: !Sub "${AWS::StackName}-B2BWebTargetGroup"
       HealthCheckIntervalSeconds: 60
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
