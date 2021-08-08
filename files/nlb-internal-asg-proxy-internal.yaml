@@ -92,6 +92,9 @@ Metadata:
       - InstanceType
       - LatestAmiId
       - KeyName
+      - ASGMinSize
+      - ASGMaxSize
+      - ASGDesiredCapacity
 
     - Label:
         default: Network parameter
@@ -109,6 +112,12 @@ Metadata:
         default: AMI ID
       KeyName:
         default: SSH Key name
+      ASGMinSize:
+        default: Minimum instance count
+      ASGMaxSize:
+        default: Maximum instance count
+      ASGDesiredCapacity:
+        default: Desired instance count
       VpcId:
         default: VPC ID
       PrivateSubnetIDs:
@@ -395,6 +404,10 @@ Resources:
         IamInstanceProfile:
           Name:
             Ref: ProxyInstanceProfile
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            Groups:
+              - !Ref ProxyEC2SecurityGroup
         TagSpecifications:
           - ResourceType: volume
             Tags:
@@ -407,6 +420,9 @@ Resources:
         UserData:
           Fn::Base64: !Sub |
               #!/bin/bash -xe
+
+              export http_proxy=http://ext-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
+              export no_proxy=169.254.169.254 && export NO_PROXY=$no_proxy
 
               # Install AWS CLI
               yum install -y awscli
