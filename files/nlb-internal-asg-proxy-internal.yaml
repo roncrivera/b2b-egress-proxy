@@ -386,7 +386,7 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.ProxyASGLaunchConfig.Metadata.AWS::CloudFormation::Init
+                path=Resources.ProxyASGLaunchTemplate.Metadata.AWS::CloudFormation::Init
                 action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource ProxyASGLaunchTemplate --region ${AWS::Region}
                 runas=root
               mode: "000400"
