@@ -214,9 +214,14 @@ Resources:
     Properties:
       VPCZoneIdentifier: !Ref PrivateSubnetIDs
       Cooldown: 120
-      LaunchConfigurationName: !Ref B2BWebLaunchConfig
-      MaxSize: 3
-      MinSize: 1
+      LaunchTemplate:
+        LaunchTemplateId: !Ref B2BWebASGLaunchTemplate
+        Version: !GetAtt B2BWebASGLaunchTemplate.LatestVersionNumber
+      MaxSize: !Ref ASGMaxSize
+      MinSize: !Ref ASGMinSize
+      DesiredCapacity: !Ref ASGDesiredCapacity
+      HealthCheckGracePeriod: 300
+      HealthCheckType: ELB
       TargetGroupARNs:
         - Ref: B2BWebTargetGroup
       TerminationPolicies:
@@ -224,11 +229,11 @@ Resources:
       Tags:
       - Key: Name
         PropagateAtLaunch: 'true'
-        Value: B2BWebASG
+        Value: B2BWebASG-instance
     CreationPolicy:
       ResourceSignal:
         Timeout: PT15M
-        Count: '1'
+        Count: !Ref ASGDesiredCapacity
     UpdatePolicy:
       AutoScalingScheduledAction:
         IgnoreUnmodifiedGroupSizeProperties: true
@@ -240,17 +245,17 @@ Resources:
         SuspendProcesses:
         - ScheduledActions
 
-  B2BWebLaunchConfig:
-    Type: AWS::AutoScaling::LaunchConfiguration
+  B2BWebASGLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Metadata:
-      Comment: Configures B2B Web Instance
+      Comment: Configures Web Instance
       AWS::CloudFormation::Init:
         config:
           files:
             "/etc/cfn/cfn-hup.conf":
               content: !Sub |
                 [main]
-                stack= ${AWS::StackId}
+                stack=${AWS::StackId}
                 region=${AWS::Region}
                 interval=5
               mode: "000400"
@@ -260,51 +265,65 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.B2BWebLaunchConfig.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BWebLaunchConfig --region ${AWS::Region}
+                path=Resources.B2BWebASGLaunchTemplate.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BWebASGLaunchTemplate --region ${AWS::Region}
                 runas=root
               mode: "000400"
               owner: "root"
               group: "root"
     Properties:
-      ImageId:  !Ref LatestAmiId
-      InstanceType: !Ref InstanceType
-      KeyName: !If
-         - AddSSHKey
-         - !Ref KeyName
-         - !Ref "AWS::NoValue"
-      SecurityGroups:
-      - !Ref B2BWebEC2SecurityGroup
-      IamInstanceProfile:
-        Ref: B2BWebInstanceProfile
-      UserData:
-        Fn::Base64: !Sub |
-            #!/bin/bash -xe
+      LaunchTemplateName: !Sub "${AWS::StackName}-B2BWebASGLaunchTemplate"
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !If
+          - AddSSHKey
+          - !Ref KeyName
+          - !Ref "AWS::NoValue"
+        IamInstanceProfile:
+          Name:
+            Ref: B2BWebInstanceProfile
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            Groups:
+              - !Ref B2BWebEC2SecurityGroup
+        TagSpecifications:
+          - ResourceType: volume
+            Tags:
+              - Key: DataClassification
+                Value: Confidential
+          - ResourceType: instance
+            Tags:
+              - Key: WebConfig
+                Value: WebConfig
+        UserData:
+          Fn::Base64: !Sub |
+              #!/bin/bash -xe
 
-            export http_proxy=http://ext-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
-            export no_proxy=169.254.169.254 && export NO_PROXY=$no_proxy
+              export http_proxy=http://int-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
+              export no_proxy=169.254.169.254 && export NO_PROXY=$no_proxy
 
-            # Install AWS CLI
-            yum install -y awscli
+              # Install AWS CLI
+              yum install -y awscli
 
-            # Install AWS CloudFormation bootstrap scripts
-            yum install -y aws-cfn-bootstrap
+              # Install AWS CloudFormation bootstrap scripts
+              yum install -y aws-cfn-bootstrap
 
-            # Start cfn-init
-            /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BWebLaunchConfig --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+              # Start cfn-init
+              /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BWebASGLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
 
-            # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
-            /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
+              # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
+              /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
 
-            # Install nginx from amazon-linux-extras
-            amazon-linux-extras install -y nginx1
+              # Install nginx from amazon-linux-extras
+              amazon-linux-extras install -y nginx1
 
-            # Start nginx
-            systemctl start nginx
+              # Start nginx
+              systemctl start nginx
 
-            # All done so signal success
-            /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BWebASG --region ${AWS::Region}
-            echo "Userdata execution completed"
+              # All done so signal success
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BWebASG --region ${AWS::Region}
+              echo "Userdata execution completed"
 
 Outputs:
 
