@@ -7,7 +7,7 @@ Parameters:
   KeyName:
     Type: String
     Description: Name of RSA key for EC2 access for testing only.
-    Default: ''
+    Default: 'riverr1-keypair'
 
   ASGMinSize:
     Description: Minimum number of instances in ASG
@@ -25,11 +25,11 @@ Parameters:
     Default: 1
 
   ProxyName:
-    Description: Proxy FQDN with trailing dot '.'
+    Description: Proxy Name (e.g. app-proxy)
     Type: String
 
   HostedZoneName:
-    Description: Hosted zone where the DNS record will be created
+    Description: Hosted zone where the proxy DNS record will be created
     Type: String
 
   VpcId:
@@ -81,10 +81,23 @@ Parameters:
     Default: 10.0.0.0/16
     AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
 
-  LatestAmiId:
-    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
-    Description: Default latest Amazon Linux2 AMI.
+  PrivateSubnetCIDR:
+    Description: The CIDR block for the PrivateSubnet. The allowed block size is between a /32 netmask and /8 netmask
+    Type: String
+    Default: 10.0.0.0/16
+    AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
+
+  LinuxMgmtSecurityGroup:
+    Description: The security group to allow MGMT communication (e.g. jumphosts)
+    Type: String
+
+  AmiId:
+    Description: AMI to use
+    Type: String
+
+  ELBAccessLogsBucket:
+    Description: VPC ID from Parameter Store
+    Type: String
 
 Metadata:
   'AWS::CloudFormation::Interface':
@@ -94,7 +107,7 @@ Metadata:
       Parameters:
       - ProxyPort
       - InstanceType
-      - LatestAmiId
+      - AmiId
       - KeyName
       - ASGMinSize
       - ASGMaxSize
@@ -113,7 +126,7 @@ Metadata:
         default: Proxy Port
       InstanceType:
         default: Instance Type
-      LatestAmiId:
+      AmiId:
         default: AMI ID
       KeyName:
         default: SSH Key name
@@ -157,13 +170,14 @@ Resources:
           Action:
           - sts:AssumeRole
       Path: "/"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
 
   ProxyNLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internal
       Type: network
-      Name: !Sub "${AWS::StackName}-ProxyNLB"
       Subnets: !Ref PrivateSubnetIDs
       Tags:
         - Key: Application
@@ -174,7 +188,6 @@ Resources:
   ProxyTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub "${AWS::StackName}-ProxyTargetGroup"
       HealthCheckIntervalSeconds: 30
       HealthCheckTimeoutSeconds: 10
       HealthyThresholdCount: 3
@@ -202,9 +215,9 @@ Resources:
   ProxyDNSRecord:
     Type: AWS::Route53::RecordSet
     Properties:
-      HostedZoneName: !Join ['', [!Ref HostedZoneName, '.']]
+      HostedZoneName: !Sub "${HostedZoneName}."
       Comment: DNS name for ProxyNLB
-      Name: !Ref ProxyName
+      Name: !Sub "${ProxyName}.${HostedZoneName}."
       Type: CNAME
       TTL: '60'
       ResourceRecords:
@@ -224,7 +237,7 @@ Resources:
       GroupDescription: Allow client access to Proxy
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-      - CidrIp: !Ref AllowedClientCIDR
+      - CidrIp: !Ref PrivateSubnetCIDR
         FromPort: !Ref ProxyPort
         ToPort: !Ref ProxyPort
         IpProtocol: tcp
@@ -402,7 +415,7 @@ Resources:
     Properties:
       LaunchTemplateName: !Sub "${AWS::StackName}-ProxyASGLaunchTemplate"
       LaunchTemplateData:
-        ImageId: !Ref LatestAmiId
+        ImageId: !Ref AmiId
         InstanceType: !Ref InstanceType
         KeyName: !If
           - AddSSHKey
@@ -417,6 +430,7 @@ Resources:
             Groups:
               - !Ref ProxyEC2SecurityGroup
               - !Ref ProxyNLBSecurityGroup
+              - !Ref LinuxMgmtSecurityGroup
         TagSpecifications:
           - ResourceType: volume
             Tags:
@@ -460,6 +474,10 @@ Outputs:
   ProxyNLBFQDN:
     Description: NLB FQDN to be used by clients
     Value: !GetAtt ProxyNLB.DNSName
+
+  ProxyDNSRecord:
+    Description: NLB FQDN to be used by clients
+    Value: !Ref ProxyDNSRecord
 
   ProxyPort:
     Description: Proxy Port
