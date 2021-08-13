@@ -8,7 +8,7 @@ Parameters:
     Type: "AWS::EC2::VPC::Id"
   HostedZoneName:
     Description: The name of the domain (hosted zone).
-    Type : String
+    Type: String
 
 Resources:
   HostedZone:

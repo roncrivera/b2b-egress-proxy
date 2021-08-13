@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  - Creates S3 bucket for ELB access logs.
+
+Resources:
+
+  ELBAccessLogsBucket:
+    Type: "AWS::S3::Bucket"
+    UpdateReplacePolicy: Delete
+    DeletionPolicy: Delete
+    Metadata:
+      cfn_nag:
+        rules_to_suppress:
+          - id: W35
+            reason: "This is the destination bucket specifically for ELB access logging and so getting records for requests made to the bucket is not required."
+    Properties:
+      BucketName: !Sub "dot-b2b-${AWS::AccountId}-${AWS::Region}-elb-access-logs-bucket"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: True
+        BlockPublicPolicy: True
+        IgnorePublicAcls: True
+        RestrictPublicBuckets: True
+      Tags:
+        - Key: DataClassification
+          Value: Confidential
+
+  ELBAccessLogsBucketResourcePolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ELBAccessLogsBucket
+      PolicyDocument:
+        Statement:
+          - Sid: "AllowELBAccountId"
+            Effect: "Allow"
+            Principal:
+              AWS: "arn:aws:iam::783225319266:root"
+              # This principal is the ELB account ID as per https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-access-logs.html#access-logging-bucket-permissions
+            Action: "s3:PutObject"
+            Resource: !Sub "${ELBAccessLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+          - Sid: "AllowAWSLogDeliveryWrite"
+            Effect: "Allow"
+            Principal:
+              Service:
+              - delivery.logs.amazonaws.com
+            Action: "s3:PutObject"
+            Resource: !Sub "${ELBAccessLogsBucket.Arn}/AWSLogs/${AWS::AccountId}/*"
+            Condition:
+              StringEquals:
+                "s3:x-amz-acl": "bucket-owner-full-control"
+          - Sid: "AllowAWSLogDeliveryAclCheck"
+            Effect: "Allow"
+            Principal:
+              Service:
+              - delivery.logs.amazonaws.com
+            Action: "s3:GetBucketAcl"
+            Resource: !GetAtt ELBAccessLogsBucket.Arn
+
+  ELBAccessLogsBucketNameParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: /dot/b2b/elb_access_logs_bucket_name
+      Type: String
+      Value: !Ref ELBAccessLogsBucket
+      Description: S3 bucket for ELB access logging
+
+Outputs:
+  ELBAccessLogsBucket:
+    Description: S3 bucket for ELB access logging.
+    Value: !Ref ELBAccessLogsBucket

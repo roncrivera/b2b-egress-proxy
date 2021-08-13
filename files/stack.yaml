@@ -1,0 +1,117 @@
+---
+#This is where you would specify the stacks for the features that you want to deploy
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Creates AWS resources for the B2BPerimeter accounts stack.
+
+Mappings:
+  EnvironmentMap:
+    '085941769644':
+      Name: riverr1
+      Description: riverr1 personal dev environment
+
+  riverr1:
+    B2BProxyInternal:
+      InternallyControlledCIDR:  '10.0.0.0/16'  # CIDR of IC subnet where load balancer will be placed
+      AllowedClientCIDR:         '10.0.0.0/16'  # Allow access from IC subnets. TODO: change this to IPNet CIDR when ready
+    B2BProxyExternal:
+      InternallyControlledCIDR:  '10.0.0.0/16'  # CIDR of IC subnet where load balancer will be placed
+      AllowedClientCIDR:         '10.0.0.0/16'  # Allow access from IC subnets. TODO: change this to IPNet CIDR when ready
+
+# Conditions:
+#   nonprod: !Equals
+#     - !FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name]
+#     - nonprod
+
+Parameters:
+  TemplateLocation:
+    Type: String
+    # Default value is the value used by the "dev" environment deployment
+    Default: dot-085941769644-ap-southeast-2-deployments-b2bperimeter
+  HostedZoneName:
+    Description: Route53 DNS zone name
+    Type: String
+    Default: roncrivera.io
+    AllowedValues:
+      - roncrivera.io
+  VpcId:
+    Description: VPC ID from Parameter Store
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: /CNS/resources/vpc_id
+  ExternallyControlledSubnets:
+    Description: Externally Controlled Subnet IDs where the proxy resources will be placed
+    Type: "AWS::SSM::Parameter::Value<List<String>>"
+    Default: /CNS/resources/subnets/ec/all
+  InternallyControlledSubnets:
+    Description: Internally Controlled Subnet IDs where the proxy resources will be placed
+    Type: "AWS::SSM::Parameter::Value<List<String>>"
+    Default: /CNS/resources/subnets/ic/all
+  InternallyControlledSecurityGroup:
+    Description: Internally Controlled Security Group
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: /CNS/resources/ic_sg
+  LinuxMgmtSecurityGroup:
+    Description: Linux Management Security Group
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: /CNS/resources/sg/linux_mgmt_id
+  PrivateHostedZoneName:
+    Description: Route53 Private Hosted Zone Name
+    Type: "AWS::SSM::Parameter::Value<String>"
+    Default: /CNS/resources/r53/private_zone_name
+  AmiId:
+    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Resources:
+
+  Route53HostedZone:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/${TemplateLocation}/r53-hosted-zone.yaml"
+      Parameters:
+        VpcId: !Ref VpcId
+        HostedZoneName: !Ref HostedZoneName
+
+  S3Resources:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/${TemplateLocation}/s3-resources.yaml"
+
+  B2BProxyInternal:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/${TemplateLocation}/nlb-internal-asg-proxy-internal.yaml"
+      Parameters:
+        VpcId: !Ref VpcId
+        AmiId: !Ref AmiId
+        AllowedClientCIDR: !FindInMap [!FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name], B2BProxyInternal, AllowedClientCIDR]
+        PrivateSubnetCIDR: !FindInMap [!FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name], B2BProxyInternal, InternallyControlledCIDR]
+        PrivateSubnetIDs: !Join [ ",", !Ref InternallyControlledSubnets ]
+        LinuxMgmtSecurityGroup: !Ref LinuxMgmtSecurityGroup
+        B2BProxyName: b2b-proxy
+        AppProxyFQDN: !GetAtt B2BProxyExternal.Outputs.ProxyDNSRecord
+        HostedZoneName: !GetAtt Route53HostedZone.Outputs.HostedZoneName
+        ELBAccessLogsBucket: !GetAtt S3Resources.Outputs.ELBAccessLogsBucket
+
+  B2BProxyExternal:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/${TemplateLocation}/nlb-internal-asg-proxy-external.yaml"
+      Parameters:
+        VpcId: !Ref VpcId
+        AmiId: !Ref AmiId
+        AllowedClientCIDR: !FindInMap [!FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name], B2BProxyInternal, AllowedClientCIDR]
+        PrivateSubnetCIDR: !FindInMap [!FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name], B2BProxyExternal, InternallyControlledCIDR]
+        PrivateSubnetIDs: !Join [ ",", !Ref InternallyControlledSubnets ]
+        PublicSubnetIDs: !Join [ ",", !Ref ExternallyControlledSubnets ]
+        LinuxMgmtSecurityGroup: !Ref LinuxMgmtSecurityGroup
+        ProxyName: ext-proxy
+        HostedZoneName: !GetAtt Route53HostedZone.Outputs.HostedZoneName
+        ELBAccessLogsBucket: !GetAtt S3Resources.Outputs.ELBAccessLogsBucket
