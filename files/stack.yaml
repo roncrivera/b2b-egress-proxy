@@ -115,3 +115,18 @@ Resources:
         ProxyName: ext-proxy
         HostedZoneName: !GetAtt Route53HostedZone.Outputs.HostedZoneName
         ELBAccessLogsBucket: !GetAtt S3Resources.Outputs.ELBAccessLogsBucket
+
+  B2BWebInternal:
+    Type: AWS::CloudFormation::Stack
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/${TemplateLocation}/alb-internal-asg-web-internal.yaml"
+      Parameters:
+        VpcId: !Ref VpcId
+        AmiId: !Ref AmiId
+        AllowedClientCIDR: !FindInMap [!FindInMap [EnvironmentMap, !Ref "AWS::AccountId", Name], B2BProxyInternal, AllowedClientCIDR]
+        PrivateSubnetIDs: !Join [ ",", !Ref InternallyControlledSubnets ]
+        LinuxMgmtSecurityGroup: !Ref LinuxMgmtSecurityGroup
+        AppProxyFQDN: !GetAtt B2BProxyExternal.Outputs.ProxyDNSRecord
+        ELBAccessLogsBucket: !GetAtt S3Resources.Outputs.ELBAccessLogsBucket

@@ -7,7 +7,7 @@ Parameters:
   KeyName:
     Type: String
     Description: Name of RSA key for EC2 access for testing only.
-    Default: ''
+    Default: 'riverr1-keypair'
 
   ASGMinSize:
     Description: Minimum number of instances in ASG
@@ -23,6 +23,10 @@ Parameters:
     Description: Desired number of instances in ASG
     Type: Number
     Default: 1
+
+  AppProxyFQDN:
+    Description: Application Proxy to use (e.g. app-proxy)
+    Type: String
 
   VpcId:
     Description: VPC where resources will be provisioned
@@ -69,10 +73,18 @@ Parameters:
     Default: 10.0.0.0/16
     AllowedPattern: ^[.0-9]*\/([89]|[12][0-9]|3[0-2])$
 
-  LatestAmiId:
-    Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
-    Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
-    Description: Default latest Amazon Linux2 AMI.
+  AmiId:
+    Description: AMI to use
+    Type: String
+
+  LinuxMgmtSecurityGroup:
+    Description: The security group to allow MGMT communication (e.g. jumphosts)
+    Type: String
+
+  ELBAccessLogsBucket:
+    Description: VPC ID from Parameter Store
+    Type: String
+
 
 Metadata:
   'AWS::CloudFormation::Interface':
@@ -82,7 +94,7 @@ Metadata:
       Parameters:
       - HttpPort
       - InstanceType
-      - LatestAmiId
+      - AmiId
       - KeyName
       - ASGMinSize
       - ASGMaxSize
@@ -100,7 +112,7 @@ Metadata:
         default: HTTP Port
       InstanceType:
         default: Instance Type
-      LatestAmiId:
+      AmiId:
         default: AMI ID
       KeyName:
         default: SSH Key name
@@ -128,10 +140,9 @@ Conditions:
 
 Resources:
 
-  B2BWebRole:
+  WebRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${AWS::StackName}-B2BWebRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -143,20 +154,18 @@ Resources:
           - sts:AssumeRole
       Path: "/"
 
-  B2BWebALB:
+  WebALB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internal
       Type: application
-      Name: !Sub "${AWS::StackName}-B2BWebALB"
       Subnets: !Ref PrivateSubnetIDs
       SecurityGroups:
-        - !Ref B2BWebALBSecurityGroup
+        - !Ref WebALBSecurityGroup
 
-  B2BWebTargetGroup:
+  WebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
-      Name: !Sub "${AWS::StackName}-B2BWebTargetGroup"
       HealthCheckIntervalSeconds: 60
       HealthCheckTimeoutSeconds: 5
       HealthyThresholdCount: 3
@@ -169,28 +178,28 @@ Resources:
       Protocol: HTTP
       VpcId: !Ref VpcId
 
-  B2BWebListener:
+  WebListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       DefaultActions:
       - Type: forward
-        TargetGroupArn: !Ref B2BWebTargetGroup
-      LoadBalancerArn: !Ref B2BWebALB
+        TargetGroupArn: !Ref WebTargetGroup
+      LoadBalancerArn: !Ref WebALB
       Port: !Ref HttpPort
       Protocol: HTTP
 
-  B2BWebInstanceProfile:
+  WebInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: "/"
-      InstanceProfileName: !Sub "${AWS::StackName}-B2BWebInstanceProfile"
+      InstanceProfileName: !Sub "${AWS::StackName}-WebInstanceProfile"
       Roles:
-        - !Ref B2BWebRole
+        - !Ref WebRole
 
-  B2BWebALBSecurityGroup:
+  WebALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow client access to B2BWebALB
+      GroupDescription: Allow client access to WebALB
       VpcId: !Ref VpcId
       SecurityGroupIngress:
       - CidrIp: !Ref AllowedClientCIDR
@@ -198,7 +207,7 @@ Resources:
         ToPort: !Ref HttpPort
         IpProtocol: tcp
 
-  B2BWebEC2SecurityGroup:
+  WebEC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Allow ELB access to Web EC2 instance
@@ -207,29 +216,29 @@ Resources:
       - IpProtocol: tcp
         FromPort: !Ref HttpPort
         ToPort: !Ref HttpPort
-        SourceSecurityGroupId: !Ref B2BWebALBSecurityGroup
+        SourceSecurityGroupId: !Ref WebALBSecurityGroup
 
-  B2BWebASG:
+  WebASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
       VPCZoneIdentifier: !Ref PrivateSubnetIDs
       Cooldown: 120
       LaunchTemplate:
-        LaunchTemplateId: !Ref B2BWebASGLaunchTemplate
-        Version: !GetAtt B2BWebASGLaunchTemplate.LatestVersionNumber
+        LaunchTemplateId: !Ref WebASGLaunchTemplate
+        Version: !GetAtt WebASGLaunchTemplate.LatestVersionNumber
       MaxSize: !Ref ASGMaxSize
       MinSize: !Ref ASGMinSize
       DesiredCapacity: !Ref ASGDesiredCapacity
       HealthCheckGracePeriod: 300
       HealthCheckType: ELB
       TargetGroupARNs:
-        - Ref: B2BWebTargetGroup
+        - Ref: WebTargetGroup
       TerminationPolicies:
       - OldestInstance
       Tags:
       - Key: Name
         PropagateAtLaunch: 'true'
-        Value: B2BWebASG-instance
+        Value: WebASG-instance
     CreationPolicy:
       ResourceSignal:
         Timeout: PT15M
@@ -245,7 +254,7 @@ Resources:
         SuspendProcesses:
         - ScheduledActions
 
-  B2BWebASGLaunchTemplate:
+  WebASGLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Metadata:
       Comment: Configures Web Instance
@@ -265,16 +274,16 @@ Resources:
               content: !Sub |
                 [cfn-auto-reloader-hook]
                 triggers=post.update
-                path=Resources.B2BWebASGLaunchTemplate.Metadata.AWS::CloudFormation::Init
-                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource B2BWebASGLaunchTemplate --region ${AWS::Region}
+                path=Resources.WebASGLaunchTemplate.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --stack ${AWS::StackName} --resource WebASGLaunchTemplate --region ${AWS::Region}
                 runas=root
               mode: "000400"
               owner: "root"
               group: "root"
     Properties:
-      LaunchTemplateName: !Sub "${AWS::StackName}-B2BWebASGLaunchTemplate"
+      LaunchTemplateName: !Sub "${AWS::StackName}-WebASGLaunchTemplate"
       LaunchTemplateData:
-        ImageId: !Ref LatestAmiId
+        ImageId: !Ref AmiId
         InstanceType: !Ref InstanceType
         KeyName: !If
           - AddSSHKey
@@ -282,11 +291,12 @@ Resources:
           - !Ref "AWS::NoValue"
         IamInstanceProfile:
           Name:
-            Ref: B2BWebInstanceProfile
+            Ref: WebInstanceProfile
         NetworkInterfaces:
           - DeviceIndex: 0
             Groups:
-              - !Ref B2BWebEC2SecurityGroup
+              - !Ref WebEC2SecurityGroup
+              - !Ref LinuxMgmtSecurityGroup
         TagSpecifications:
           - ResourceType: volume
             Tags:
@@ -300,7 +310,7 @@ Resources:
           Fn::Base64: !Sub |
               #!/bin/bash -xe
 
-              export http_proxy=http://int-proxy.roncrivera.io:3128 && export https_proxy=$http_proxy
+              export http_proxy=http://${AppProxyFQDN}:3128 && export https_proxy=$http_proxy
               export no_proxy=169.254.169.254 && export NO_PROXY=$no_proxy
 
               # Install AWS CLI
@@ -310,7 +320,7 @@ Resources:
               yum install -y aws-cfn-bootstrap
 
               # Start cfn-init
-              /opt/aws/bin/cfn-init -s ${AWS::StackId} -r B2BWebASGLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+              /opt/aws/bin/cfn-init -s ${AWS::StackId} -r WebASGLaunchTemplate --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
 
               # Start up the cfn-hup daemon to listen for changes to the launch configuration metadata
               /opt/aws/bin/cfn-hup || error_exit 'Failed to start cfn-hup'
@@ -322,14 +332,14 @@ Resources:
               systemctl start nginx
 
               # All done so signal success
-              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource B2BWebASG --region ${AWS::Region}
+              /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackId} --resource WebASG --region ${AWS::Region}
               echo "Userdata execution completed"
 
 Outputs:
 
-  B2BWebALBFQDN:
+  WebALBFQDN:
     Description: ALB FQDN to be used by clients
-    Value: !GetAtt B2BWebALB.DNSName
+    Value: !GetAtt WebALB.DNSName
 
   HttpPort:
     Description: HTTP Port
@@ -337,4 +347,4 @@ Outputs:
 
   HttpURL:
     Description: HTTP URL
-    Value: !Sub "http://${B2BWebALB.DNSName}:${HttpPort}"
+    Value: !Sub "http://${WebALB.DNSName}:${HttpPort}"
